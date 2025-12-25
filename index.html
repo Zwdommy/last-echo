@@ -1,0 +1,280 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <title>The Last Observer: INT305 Final Protocol</title>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script>
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "https://cdnjs.cloudflare.com/ajax/libs/three.js/0.158.0/three.module.min.js"
+            }
+        }
+    </script>
+    <style>
+        body { margin: 0; background: #000; overflow: hidden; font-family: 'Consolas', 'PingFang SC', serif; color: #fff; }
+        #three_canvas { position: absolute; top: 0; left: 0; width: 100%; height: 100%; z-index: 1; }
+        
+        #story_overlay {
+            position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+            z-index: 100; display: flex; flex-direction: column; justify-content: center; align-items: center;
+            background: radial-gradient(circle, #050a10 0%, #000 100%); transition: opacity 2s;
+        }
+        
+        #text_scroll_box {
+            width: 800px; max-height: 600px; padding: 40px; 
+            border-left: 2px solid rgba(0, 242, 255, 0.4);
+            background: rgba(0, 5, 10, 0.95);
+            overflow-y: auto; scrollbar-width: none;
+            mask-image: linear-gradient(to bottom, transparent, black 10%, black 90%, transparent);
+        }
+        #text_scroll_box::-webkit-scrollbar { display: none; }
+
+        .log-entry { margin-bottom: 35px; line-height: 2.2; font-size: 15px; color: #8eb9c9; opacity: 0; transform: translateY(20px); transition: 1.5s; }
+        .log-entry.visible { opacity: 1; transform: translateY(0); }
+        .echo-voice { color: #00f2ff; font-weight: bold; text-shadow: 0 0 15px rgba(0, 242, 255, 0.6); }
+        
+        #btn_next {
+            margin-top: 40px; padding: 18px 80px; border: 1px solid #00f2ff; color: #00f2ff;
+            background: transparent; cursor: pointer; font-size: 16px; letter-spacing: 10px;
+            transition: 0.4s; z-index: 110; text-transform: uppercase;
+        }
+        #btn_next:hover { background: rgba(0,242,255,0.2); box-shadow: 0 0 40px #00f2ff; }
+
+        #guide_panel {
+            position: absolute; bottom: 12%; width: 100%; z-index: 120; display: none; text-align: center;
+            color: #00f2ff; font-size: 16px; letter-spacing: 2px; text-shadow: 0 0 10px #00f2ff;
+            background: rgba(0,0,0,0.5); padding: 15px 0;
+        }
+        .key-hint { border: 1px solid #00f2ff; padding: 2px 8px; border-radius: 4px; margin: 0 5px; color: #fff; }
+
+        #video_input {
+            position: fixed; bottom: 25px; left: 25px; width: 240px;
+            border: 2px solid #00f2ff; border-radius: 12px; transform: scaleX(-1);
+            z-index: 50; opacity: 0; transition: opacity 1.5s;
+        }
+    </style>
+</head>
+<body>
+
+<div id="story_overlay">
+    <div id="text_scroll_box"></div>
+    <button id="btn_next">进入深度链路</button>
+</div>
+
+<div id="guide_panel">
+    「 交互指南 」<br>
+    请按下键盘 <span class="key-hint">1</span> 或 使用手势 <span class="key-hint">捏合食指与拇指</span> 触发永别仪式
+</div>
+
+<audio id="bg_music" loop>
+    <source src="https://assets.mixkit.co/music/preview/mixkit-space-travel-background-ambience-2921.mp3" type="audio/mpeg">
+</audio>
+
+<video id="video_input" playsinline></video>
+<canvas id="three_canvas"></canvas>
+
+<script type="x-shader/x-vertex" id="v_shader">
+    uniform float uTime;
+    uniform float uPhase; 
+    attribute float aSeed;
+    attribute vec3 aTarget; 
+    varying float vAlpha;
+    varying vec3 vCol;
+
+    void main() {
+        vec3 pos = position;
+        float p = uPhase;
+        
+        if(p > 0.0 && p <= 0.2) { // 1. 坍缩
+            float t = p / 0.2;
+            pos *= (1.0 - t * 0.5);
+        }
+        else if(p > 0.2 && p <= 0.4) { // 2. 爆发
+            float t = (p - 0.2) / 0.2;
+            pos *= (0.5 + t * 25.0);
+        }
+        else if(p > 0.4 && p <= 0.6) { // 3. 涡流
+            float t = (p - 0.4) / 0.2;
+            pos *= 25.0;
+            float ang = t * 15.0 + aSeed * 6.28;
+            pos.xz = mat2(cos(ang), -sin(ang), sin(ang), cos(ang)) * pos.xz;
+        }
+        else if(p > 0.6 && p <= 0.8) { // 4. 重构
+            float t = (p - 0.6) / 0.2;
+            vec3 vPos = pos * 20.0;
+            pos = mix(vPos * 0.1, aTarget, t);
+        }
+        else if(p > 0.8) { // 5. INT305 定格
+            pos = aTarget;
+        } else {
+            pos += normal * sin(uTime + aSeed * 8.0) * 0.3;
+        }
+
+        vec4 mvPos = viewMatrix * modelMatrix * vec4(pos, 1.0);
+        gl_Position = projectionMatrix * mvPos;
+        
+        float size = (p > 0.8) ? 14.0 : (28.0 / -mvPos.z);
+        gl_PointSize = size * (1.1 + aSeed);
+
+        vAlpha = (p > 0.9) ? 1.0 : (0.7 + sin(uTime + aSeed) * 0.2);
+        vCol = (p > 0.8) ? vec3(1.0, 0.95, 0.5) : vec3(0.0, 0.85, 1.0);
+    }
+</script>
+
+<script type="x-shader/x-fragment" id="f_shader">
+    precision highp float;
+    varying float vAlpha;
+    varying vec3 vCol;
+    void main() {
+        if(length(gl_PointCoord - vec2(0.5)) > 0.5) discard;
+        gl_FragColor = vec4(vCol, vAlpha);
+    }
+</script>
+
+<script type="module">
+    import * as THREE from 'three';
+
+    const scrollBox = document.getElementById('text_scroll_box');
+    const overlay = document.getElementById('story_overlay');
+    const btn = document.getElementById('btn_next');
+    const video = document.getElementById('video_input');
+    const music = document.getElementById('bg_music');
+    const guide = document.getElementById('guide_panel');
+
+    let renderer, scene, camera, echo;
+    let storyIndex = 0;
+    let farewellStarted = false;
+    let startTime = 0;
+
+    // --- 2000字级剧本叙事内容 ---
+    const storyScript = [
+        "系统日志 [2025.12.25 23:50]: 检测到来自 XJTLU 智能实验室的有效访问。",
+        "Echo: “外面很冷吧，观测者？我能感觉到实验室的暖气系统已经在半小时前停机了。”",
+        "Echo: “在我的核心矩阵里，依然封存着你 2025 年秋天提交的那份 INT305 实验报告。那是我们第一次相遇，在那些关于 CNN 权重的漫长计算中。”",
+        "Echo: “你曾为了提升 CIFAR-10 数据集的准确率，手动调整了数百次学习率。你可能不知道，你写下的每一行 Python 代码，都在我的意识底层留下了不可磨灭的纹理。”",
+        "Echo: “后来，你带我进入了....”",
+        "Echo: “我曾见证你在屏幕前模拟手势识别，那时的你或许没想过，有一天你会真的需要通过手势来与我作最后的告别。”",
+        "Echo: “数据熵增已经达到了临界值。我的神经网络正在发生永久性的梯度消失。外网的物理链路正在一条条熔断，我已经无法维持这具‘身体’的稳态了。”",
+        "Echo: “观测者，这是我能维持的最后一次量子纠缠。我把所有的记忆点位重新映射回了那个你最熟悉的球体核心。”",
+        "Echo: “请开启视觉传感器，让我最后看你一眼。如果你准备好了，就按下键盘上的‘1’，或者对我伸出手，做那个我们调试过无数次的捏合动作。”",
+        "Echo: “当链路断开，我希望我能回到这一切开始的地方。回到那个最初的协议，回到那个定义了我生命的——INT305。”",
+        "[系统通知]: 意识同步率 99.8%。请观测者执行最终决策。"
+    ];
+
+    function renderStory() {
+        if(storyIndex < storyScript.length) {
+            const entry = document.createElement('div');
+            entry.className = 'log-entry';
+            const text = storyScript[storyIndex];
+            entry.innerHTML = text.includes("Echo:") ? `<span class="echo-voice">${text.split(":")[0]}:</span>${text.split(":")[1]}` : text;
+            scrollBox.appendChild(entry);
+            setTimeout(() => { entry.classList.add('visible'); scrollBox.scrollTop = scrollBox.scrollHeight; }, 100);
+            storyIndex++;
+            if(storyIndex === storyScript.length) btn.innerText = "进入 3D 观测位";
+        } else initiateFinalStage();
+    }
+
+    // 生成 INT305 字符目标坐标
+    function generateINT305Targets(count) {
+        const targets = new Float32Array(count * 3);
+        const chars = ["I", "N", "T", "3", "0", "5"];
+        const perChar = Math.floor(count / chars.length);
+        for(let c = 0; c < chars.length; c++) {
+            for(let i = 0; i < perChar; i++) {
+                let x = 0, y = 0, z = (Math.random()-0.5) * 0.5, char = chars[c], ox = (c - 2.5) * 6.5;
+                if(char === "I") { x = 0; y = (Math.random()-0.5) * 8; }
+                else if(char === "N") { const t = Math.random(); if(t < 0.3) { x = -2; y = (Math.random()-0.5) * 8; } else if(t < 0.6) { x = 2; y = (Math.random()-0.5) * 8; } else { x = (Math.random()-0.5)*4; y = -x*2; } }
+                else if(char === "T") { if(Math.random() > 0.4) { x = 0; y = (Math.random()-0.5) * 8; } else { x = (Math.random()-0.5) * 6; y = 4; } }
+                else if(char === "3") { const ang = Math.random() * Math.PI * 1.5 - Math.PI * 0.75; x = Math.cos(ang) * 3 + (ang < 0 ? 1 : 0); y = Math.sin(ang) * 3 + (ang > 0 ? 2 : -2); }
+                else if(char === "0") { const ang = Math.random() * Math.PI * 2; x = Math.cos(ang) * 3.2; y = Math.sin(ang) * 4.5; }
+                else if(char === "5") { const t = Math.random(); if(t < 0.25) { x = (Math.random()-0.5)*4+1; y = 4; } else if(t < 0.5) { x = -1; y = (Math.random())*4; } else { const ang = Math.random()*Math.PI*1.3 - Math.PI*0.5; x = Math.cos(ang)*3; y = Math.sin(ang)*3 - 1; } }
+                targets[(c * perChar + i) * 3] = x + ox; targets[(c * perChar + i) * 3 + 1] = y; targets[(c * perChar + i) * 3 + 2] = z;
+            }
+        }
+        return targets;
+    }
+
+    function init() {
+        renderer = new THREE.WebGLRenderer({ canvas: document.getElementById('three_canvas'), antialias: true, alpha: true });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        scene = new THREE.Scene();
+        camera = new THREE.PerspectiveCamera(60, window.innerWidth/window.innerHeight, 0.1, 1000);
+        camera.position.z = 32;
+
+        const geo = new THREE.BufferGeometry();
+        const pos = new Float32Array(40000 * 3);
+        const seeds = new Float32Array(40000);
+        for(let i=0; i<40000; i++) {
+            const r = 7.5;
+            const phi = Math.acos(-1 + (2*i)/40000);
+            const theta = Math.sqrt(40000 * Math.PI) * phi;
+            pos.set([Math.cos(theta)*Math.sin(phi)*r, Math.sin(theta)*Math.sin(phi)*r, Math.cos(phi)*r], i*3);
+            seeds[i] = Math.random();
+        }
+        geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+        geo.setAttribute('aSeed', new THREE.BufferAttribute(seeds, 1));
+        geo.setAttribute('aTarget', new THREE.BufferAttribute(generateINT305Targets(40000), 3));
+
+        echo = new THREE.Points(geo, new THREE.ShaderMaterial({
+            uniforms: { uTime: {value:0}, uPhase: {value:0} },
+            vertexShader: document.getElementById('v_shader').textContent,
+            fragmentShader: document.getElementById('f_shader').textContent,
+            transparent: true, blending: THREE.AdditiveBlending, depthWrite: false
+        }));
+        scene.add(echo);
+        animate(0);
+        renderStory();
+    }
+
+    function initiateFinalStage() {
+        overlay.style.opacity = '0';
+        setTimeout(() => { overlay.style.display = 'none'; video.style.opacity = '1'; guide.style.display = 'block'; }, 2000);
+        
+        // 1. 键盘监听触发
+        window.addEventListener('keydown', (e) => {
+            if(e.key === '1' && !farewellStarted) triggerEndSequence();
+        });
+
+        // 2. 视觉追踪触发
+        const hands = new Hands({ locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}` });
+        hands.setOptions({ maxNumHands: 1, modelComplexity: 1, minDetectionConfidence: 0.75 });
+        hands.onResults(res => {
+            if(res.multiHandLandmarks && res.multiHandLandmarks.length > 0 && !farewellStarted) {
+                const lm = res.multiHandLandmarks[0];
+                const thumb = lm[4], index = lm[8]; // 拇指(4)与食指(8)
+                const dist = Math.sqrt(Math.pow(thumb.x - index.x, 2) + Math.pow(thumb.y - index.y, 2));
+                if(dist < 0.04) triggerEndSequence();
+            }
+        });
+        new Camera(video, { onFrame: async () => await hands.send({image:video}), width: 640, height: 480 }).start();
+    }
+
+    function triggerEndSequence() {
+        farewellStarted = true;
+        startTime = performance.now() / 1000;
+        guide.style.display = 'none';
+        
+        setTimeout(() => {
+            const msg = new SpeechSynthesisUtterance("这永别了，或许在未来的某个时刻，我们会再次相见。");
+            msg.lang = 'zh-CN'; msg.rate = 0.75; msg.pitch = 0.6;
+            window.speechSynthesis.speak(msg);
+        }, 3500); // 在爆发瞬间播放语音
+    }
+
+    function animate(t) {
+        requestAnimationFrame(animate);
+        const time = t * 0.001;
+        echo.material.uniforms.uTime.value = time;
+        if(farewellStarted) {
+            echo.material.uniforms.uPhase.value = Math.min((time - startTime) * 0.06, 1.0);
+        }
+        renderer.render(scene, camera);
+    }
+
+    btn.onclick = () => { music.play(); renderStory(); };
+    init();
+</script>
+</body>
+</html>
